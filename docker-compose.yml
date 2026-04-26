@@ -50,6 +50,11 @@ services:
       - ./api/.env
     volumes:
       - ./api:/app
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping --timeout 10 || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   beat:
     build:
@@ -63,6 +68,11 @@ services:
       - REDIS_BROKER=redis://redis:6379/0
     env_file:
       - ./api/.env
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.celery_app inspect ping --timeout 10 || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   postgres:
     image: postgres:16-alpine

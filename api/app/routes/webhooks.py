@@ -6,7 +6,10 @@ from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Response
 from svix.webhooks import Webhook as SvixWebhook
 import redis.asyncio as redis
+from sqlalchemy import select
 from app.config import get_settings
+from app.database import AsyncSessionLocal
+from app.models import WebhookSource
 from app.schemas import EventCreate
 
 settings = get_settings()
@@ -106,37 +109,67 @@ async def ingest_webhook(
     """
     # 1. Read raw body BEFORE anything else (research gotcha #2)
     body = await request.body()
-
-    # 2. Get source config (we'll verify this in the processing step)
-    # For now, extract signature headers
     headers = dict(request.headers)
 
-    # 3. Check rate limit
+    # 2. Fetch source config and verify signature
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(WebhookSource).where(WebhookSource.id == source_id)
+        )
+        source = result.scalar_one_or_none()
+
+    if not source:
+        raise HTTPException(status_code=404, detail=f"Source '{source_id}' not found")
+
+    if not source.is_active:
+        raise HTTPException(status_code=422, detail=f"Source '{source_id}' is inactive")
+
+    # 3. Verify signature
+    signing_secret = source.signing_secret
+    svix_signature = headers.get("svix-signature")
+
+    if svix_signature:
+        # Svix-format webhook (n8n, Svix SDK)
+        if not verify_svix_signature(body, headers, signing_secret):
+            raise HTTPException(status_code=401, detail="Invalid Svix signature")
+    else:
+        # Raw HMAC-SHA256 (Make.com, custom webhooks)
+        hmac_signature = headers.get("x-hmac-signature") or headers.get("x-signature", "")
+        if not hmac_signature:
+            raise HTTPException(status_code=401, detail="Missing signature header (svix-signature or x-hmac-signature)")
+        if not verify_hmac_sha256(body, hmac_signature, signing_secret):
+            raise HTTPException(status_code=401, detail="Invalid HMAC signature")
+
+    # 4. Check rate limit
     if not await check_rate_limit(source_id):
         raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
-    # 4. Extract message_id for replay protection (Svix headers)
+    # 5. Extract message_id for replay protection
     message_id = headers.get("svix-id") or headers.get("x-message-id") or str(uuid.uuid4())
 
-    # 5. Check replay protection
+    # 6. Check replay protection
     if await check_replay(message_id):
         # Silently accept duplicate - don't reprocess
         return {"status": "accepted", "duplicate": True}
 
-    # 6. Parse event data
+    # 7. Parse event data
     try:
         event_data = json.loads(body)
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
-    # 7. Basic validation
+    # 8. Basic validation
     if not event_data.get("workflow_id"):
         raise HTTPException(status_code=400, detail="Missing workflow_id")
 
-    # 8. Store event for async processing
+    # 9. Store event in Redis for SSE pub/sub
     event = await store_event_locally(event_data, source_id)
 
-    # 9. Return 200 for valid events (gotcha #7)
+    # 10. Dispatch Celery task for PostgreSQL persistence
+    from app.tasks import process_event
+    process_event.delay(event)
+
+    # 11. Return 200 for valid events (gotcha #7)
     return {"status": "accepted", "event_id": event["id"]}
 
 
