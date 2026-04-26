@@ -250,4 +250,45 @@ def send_email_alert(event_id: str, event_data: dict):
 
 @celery_app.task
 def cleanup_old_events():
-    pass
+    """
+    Partition maintenance via Celery Beat (daily at 2am UTC).
+    - Creates partitions for the next 7 days
+    - Drops partitions older than 7 days
+    Uses raw SQL via psycopg2 sync engine.
+    """
+    from datetime import date, timedelta
+    from sqlalchemy import text
+
+    with engine.connect() as conn:
+        # --- Create future partitions (next 7 days) ---
+        today = date.today()
+        for i in range(1, 8):
+            partition_date = today + timedelta(days=i)
+            table_name = f"workflow_events_y{partition_date.strftime('%Y%m%d')}"
+            start_val = partition_date.strftime("%Y-%m-%d 00:00:00")
+            end_val = partition_date.strftime("%Y-%m-%d 23:59:59")
+            conn.execute(text(
+                f"""
+                CREATE TABLE IF NOT EXISTS {table_name}
+                PARTITION OF workflow_events
+                FOR VALUES FROM ('{start_val}') TO ('{end_val}')
+                """
+            ))
+        conn.commit()
+
+        # --- Drop partitions older than 7 days ---
+        cutoff = (today - timedelta(days=7)).strftime("%Y%m%d")
+        result = conn.execute(text(
+            """
+            SELECT tablename FROM information_schema.tables
+            WHERE tablename LIKE 'workflow_events_y%'
+            AND tablename < 'workflow_events_y' || :cutoff
+            AND schemaname = 'public'
+            """,
+            {"cutoff": cutoff}
+        ))
+        old_partitions = [row[0] for row in result]
+        for table_name in old_partitions:
+            conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
+        conn.commit()
+

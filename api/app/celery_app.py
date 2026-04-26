@@ -1,4 +1,5 @@
 from celery import Celery
+from celery.schedules import crontab
 from app.config import get_settings
 
 settings = get_settings()
@@ -21,4 +22,10 @@ celery_app.conf.update(
     result_expires=604800,  # 7 days
     task_default_retry_delay=60,
     task_default_max_retries=5,
+    beat_schedule={
+        "partition-maintenance": {
+            "task": "app.tasks.tasks.cleanup_old_events",
+            "schedule": crontab(hour=2, minute=0),  # daily at 2am UTC
+        },
+    },
 )
