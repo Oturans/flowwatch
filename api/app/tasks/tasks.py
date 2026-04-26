@@ -111,7 +111,7 @@ def send_alert(self, event_id: str, event_data: dict):
             response = httpx.post(webhook_url, json={"blocks": blocks}, timeout=10)
             response.raise_for_status()
 
-            # Log alert
+            # Log Slack alert
             alert = AlertLog(
                 source_id=event_data["source_id"],
                 alert_type="slack",
@@ -120,6 +120,9 @@ def send_alert(self, event_id: str, event_data: dict):
             )
             session.add(alert)
             session.commit()
+
+            # Fire email alert in parallel (don't block)
+            send_email_alert.delay(event_id, event_data)
 
             return {"status": "sent", "alert_type": "slack"}
 
@@ -141,3 +144,110 @@ def cleanup_old_events():
     For MVP, partition dropping handles retention.
     """
     pass  # Placeholder for retention policy
+
+
+@celery_app.task
+def send_email_alert(event_id: str, event_data: dict):
+    """
+    Send email alert for failed events via Resend.
+    Does NOT retry on failure — just logs and returns.
+    """
+    try:
+        import resend
+        from app.models import AlertLog
+        from sqlalchemy.orm import Session
+
+        if not settings.resend_api_key or not settings.alert_email_to:
+            return {"status": "skipped", "reason": "no_email_config"}
+
+        session = SessionLocal()
+        try:
+            workflow_name = event_data.get("workflow_id", "Unknown")
+            source_id = event_data.get("source_id", "N/A")
+            error_message = event_data.get("error_message", "N/A")
+            timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            dashboard_link = f"https://flowwatch.app/events/{event_id}"
+
+            html_body = f"""
+            <html>
+            <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; color: #333;">
+                <div style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a5a 100%); padding: 20px; text-align: center;">
+                    <h1 style="color: white; margin: 0;">🚨 Workflow Failed</h1>
+                </div>
+                <div style="padding: 20px;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Workflow</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">{workflow_name}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Source</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">{source_id}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Error</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee; color: #d32f2f;">{error_message[:500]}</td>
+                        </tr>
+                        <tr>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;"><strong>Time</strong></td>
+                            <td style="padding: 10px; border-bottom: 1px solid #eee;">{timestamp}</td>
+                        </tr>
+                    </table>
+                    <div style="margin-top: 20px; text-align: center;">
+                        <a href="{dashboard_link}" style="background: #4CAF50; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block;">View in FlowWatch Dashboard</a>
+                    </div>
+                </div>
+            </body>
+            </html>
+            """
+
+            resend.api_key = settings.resend_api_key
+            params = {
+                "from": settings.alert_email_from,
+                "to": settings.alert_email_to,
+                "subject": f"🚨 FlowWatch: {workflow_name} failed",
+                "html": html_body,
+            }
+            resend.Emails.send(params)
+
+
+            # Log alert
+            alert = AlertLog(
+                source_id=source_id,
+                alert_type="email",
+                message=f"Email alert sent for event {event_id}",
+                status="sent"
+            )
+            session.add(alert)
+            session.commit()
+
+
+            return {"status": "sent", "alert_type": "email"}
+
+        finally:
+            session.close()
+
+    except Exception as exc:
+        # Don't retry - just log and return
+        try:
+            from app.models import AlertLog
+            session = SessionLocal()
+            try:
+                alert = AlertLog(
+                    source_id=event_data.get("source_id", ""),
+                    alert_type="email",
+                    message=f"Email alert failed for event {event_id}: {str(exc)}",
+                    status="failed"
+                )
+                session.add(alert)
+                session.commit()
+            finally:
+                session.close()
+        except Exception:
+            pass  # Give up if even logging fails
+        return {"status": "failed", "error": str(exc)}
+
+
+@celery_app.task
+def cleanup_old_events():
+    pass

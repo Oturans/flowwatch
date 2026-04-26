@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Slack
     slack_webhook_url: str = ""
 
+    # Resend Email
+    resend_api_key: str = ""
+    alert_email_from: str = "FlowWatch <alerts@flowwatch.app>"
+    alert_email_to: str = ""
+
     class Config:
         env_file = ".env"
         extra = "allow"

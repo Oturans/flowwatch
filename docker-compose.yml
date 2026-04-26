@@ -21,6 +21,9 @@ services:
       - REDIS_RATE_LIMIT_DB=2
       - REDIS_PUBSUB_DB=3
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM:-FlowWatch alerts@flowwatch.app}
+      - ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-}
     env_file:
       - ./api/.env
     volumes:
@@ -46,6 +49,9 @@ services:
       - DATABASE_URL_SYNC=postgresql+psycopg2://flowwatch:pw@postgres:5432/flowwatch
       - REDIS_BROKER=redis://redis:6379/0
       - REDIS_RESULT_BACKEND=redis://redis:6379/1
+      - RESEND_API_KEY=${RESEND_API_KEY:-}
+      - ALERT_EMAIL_FROM=${ALERT_EMAIL_FROM:-FlowWatch alerts@flowwatch.app}
+      - ALERT_EMAIL_TO=${ALERT_EMAIL_TO:-}
     env_file:
       - ./api/.env
     volumes:
