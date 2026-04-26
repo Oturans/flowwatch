@@ -138,15 +138,6 @@ def send_alert(self, event_id: str, event_data: dict):
 
 
 @celery_app.task
-def cleanup_old_events():
-    """
-    Cleanup task to run via Celery Beat.
-    For MVP, partition dropping handles retention.
-    """
-    pass  # Placeholder for retention policy
-
-
-@celery_app.task
 def send_email_alert(event_id: str, event_data: dict):
     """
     Send email alert for failed events via Resend.
