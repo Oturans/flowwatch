@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://flowwatch:pw@postgres:5432/flowwatch
+      - DATABASE_URL_SYNC=postgresql+psycopg2://flowwatch:pw@postgres:5432/flowwatch
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_BROKER=redis://redis:6379/0
+      - REDIS_RESULT_BACKEND=redis://redis:6379/1
+      - REDIS_RATE_LIMIT_DB=2
+      - REDIS_PUBSUB_DB=3
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+    env_file:
+      - ./api/.env
+    volumes:
+      - ./api:/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app worker -l info -c 4 -Q webhook,retry
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://flowwatch:pw@postgres:5432/flowwatch
+      - DATABASE_URL_SYNC=postgresql+psycopg2://flowwatch:pw@postgres:5432/flowwatch
+      - REDIS_BROKER=redis://redis:6379/0
+      - REDIS_RESULT_BACKEND=redis://redis:6379/1
+    env_file:
+      - ./api/.env
+    volumes:
+      - ./api:/app
+
+  beat:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    command: celery -A app.celery_app beat -l info
+    depends_on:
+      redis:
+        condition: service_started
+    environment:
+      - REDIS_BROKER=redis://redis:6379/0
+    env_file:
+      - ./api/.env
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=flowwatch
+      - POSTGRES_USER=flowwatch
+      - POSTGRES_PASSWORD=pw
+      - POSTGRES_HOST_AUTH_METHOD=trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./api/alembic/versions:/docker-entrypoint-initdb.d/migrations
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flowwatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+      --save ""
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    environment:
+      - NEXT_PUBLIC_API_URL=http://api:8000
+      - NODE_ENV=production
+
+volumes:
+  pgdata:
+  redisdata:
