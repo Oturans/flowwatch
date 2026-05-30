@@ -18,7 +18,7 @@ class TestSendEmailAlert:
     @pytest.mark.asyncio
     async def test_send_email_alert_success(self, event_data):
         """Test successful email sending via Resend."""
-        with patch("app.tasks.tasks.resend") as mock_resend:
+        with patch("resend.Emails.send") as mock_resend:
             mock_resend.Emails.send = MagicMock(return_value={"id": "email_123"})
             with patch("app.tasks.tasks.SessionLocal") as mock_session:
                 mock_session.return_value.__enter__ = MagicMock()

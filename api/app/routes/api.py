@@ -7,7 +7,7 @@ from app.database import get_db
 from app.models import WebhookSource, WorkflowEvent, AlertLog
 from app.schemas import (
     WebhookSourceCreate, WebhookSourceResponse, WebhookSourceUpdate,
-    EventResponse, DashboardStats
+    EventResponse, DashboardStats, AlertLogResponse
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -202,7 +202,7 @@ async def get_dashboard_stats(db: AsyncSession = Depends(get_db)):
 
 # ============ Alerts ============
 
-@router.get("/alerts", response_model=list[AlertLog])
+@router.get("/alerts", response_model=list[AlertLogResponse])
 async def list_alerts(
     source_id: Optional[str] = None,
     skip: int = Query(0, ge=0),

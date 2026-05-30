@@ -37,7 +37,7 @@ class EventCreate(BaseModel):
     status: str = Field(..., description="Status: success, error, running, timeout")
     payload: Optional[dict] = None
     error_message: Optional[str] = None
-    duration_ms: Optional[int] = None
+    duration_ms: Optional[int] = Field(None, ge=0)
 
 
 class EventResponse(BaseModel):
