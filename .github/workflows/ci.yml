@@ -1,0 +1,133 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  backend-tests:
+    name: Backend Tests (Python ${{ env.PYTHON_VERSION }})
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: flowwatch
+          POSTGRES_PASSWORD: pw
+          POSTGRES_DB: flowwatch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: api/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run migrations
+        run: |
+          alembic upgrade head
+        env:
+          DATABASE_URL: postgresql+asyncpg://flowwatch:pw@localhost:5432/flowwatch
+          DATABASE_URL_SYNC: postgresql+psycopg2://flowwatch:pw@localhost:5432/flowwatch
+          REDIS_URL: redis://localhost:6379/0
+
+      - name: Run tests with pytest
+        run: pytest tests/ -v
+        env:
+          DATABASE_URL: postgresql+asyncpg://flowwatch:pw@localhost:5432/flowwatch
+          DATABASE_URL_SYNC: postgresql+psycopg2://flowwatch:pw@localhost:5432/flowwatch
+          REDIS_URL: redis://localhost:6379/0
+          REDIS_BROKER: redis://localhost:6379/0
+          RESEND_API_KEY: test-key
+
+  frontend-build:
+    name: Frontend Build (Node ${{ env.NODE_VERSION }})
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+  landing-page-check:
+    name: Landing Page Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check README exists
+        run: test -f README.md && echo "✅ README.md found" || { echo "❌ README.md missing"; exit 1; }
+
+      - name: Check docker-compose exists
+        run: test -f docker-compose.yml && echo "✅ docker-compose.yml found" || { echo "❌ docker-compose.yml missing"; exit 1; }
+
+      - name: Check API entry point
+        run: test -f api/app/main.py && echo "✅ api/app/main.py found" || { echo "❌ api/app/main.py missing"; exit 1; }
+
+      - name: Check Dashboard layout
+        run: test -f dashboard/app/layout.tsx && echo "✅ dashboard/app/layout.tsx found" || { echo "❌ dashboard/app/layout.tsx missing"; exit 1; }
+
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install flake8
+        run: pip install flake8
+
+      - name: Run flake8
+        run: flake8 app/ tests/ --max-line-length=100 --ignore=W503,E501
