@@ -27,5 +27,9 @@ celery_app.conf.update(
             "task": "app.tasks.tasks.cleanup_old_events",
             "schedule": crontab(hour=2, minute=0),  # daily at 2am UTC
         },
+        "escalation-check": {
+            "task": "app.tasks.tasks.check_escalation",
+            "schedule": crontab(minute="*/5"),  # every 5 minutes
+        },
     },
 )

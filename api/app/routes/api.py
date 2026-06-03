@@ -7,7 +7,12 @@ from app.database import get_db
 from app.models import WebhookSource, WorkflowEvent, AlertLog
 from app.schemas import (
     WebhookSourceCreate, WebhookSourceResponse, WebhookSourceUpdate,
-    EventResponse, DashboardStats, AlertLogResponse
+    EventResponse, DashboardStats, AlertLogResponse,
+    AlertRulesUpdate,
+)
+from app.alerts.mute_windows import (
+    is_muted as _is_muted,
+    list_active_windows as _list_active_windows,
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -400,4 +405,136 @@ async def get_retry_config(source_id: str, db: AsyncSession = Depends(get_db)):
         "source_id": source_id,
         "max_retries": cfg.get("max_retries", DEFAULT_MAX_RETRIES),
         "retry_on_status": cfg.get("retry_on_status", list(DEFAULT_RETRY_STATUSES)),
+    }
+
+
+# ============ Alert rules (P2: mute windows + escalation) ============
+
+
+@router.put("/sources/{source_id}/alert-rules", response_model=dict)
+async def put_alert_rules(
+    source_id: str,
+    rules: AlertRulesUpdate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a source's alert rules (mute windows + escalation).
+
+    Either field may be omitted to leave it unchanged.
+    """
+    result = await db.execute(
+        select(WebhookSource).where(WebhookSource.id == source_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    new_config: dict = dict(source.alert_config or {})
+
+    if rules.mute_windows is not None:
+        # Pydantic-validated windows -> dicts for storage.
+        new_config["mute_windows"] = [
+            w.model_dump() for w in rules.mute_windows
+        ]
+
+    if rules.escalation is not None:
+        # Replace (not merge) the escalation block; the schema guarantees
+        # all required fields are present.
+        new_config["escalation"] = rules.escalation.model_dump()
+
+    source.alert_config = new_config
+    await db.commit()
+    await db.refresh(source)
+    return {
+        "source_id": source_id,
+        "alert_config": source.alert_config,
+    }
+
+
+@router.get("/sources/{source_id}/alert-rules")
+async def get_alert_rules(source_id: str, db: AsyncSession = Depends(get_db)):
+    """Return a source's alert rules (mute windows + escalation)."""
+    result = await db.execute(
+        select(WebhookSource).where(WebhookSource.id == source_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    cfg = source.alert_config or {}
+    return {
+        "source_id": source_id,
+        "mute_windows": cfg.get("mute_windows", []),
+        "escalation": cfg.get("escalation") or {},
+    }
+
+
+@router.post("/sources/{source_id}/test-mute")
+async def test_mute(
+    source_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return whether a source is currently muted (and which windows)."""
+    result = await db.execute(
+        select(WebhookSource).where(WebhookSource.id == source_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    return {
+        "source_id": source_id,
+        "muted": _is_muted(source),
+        "active_windows": _list_active_windows(source),
+    }
+
+
+# ============ Alert acknowledge (P2: escalation suppression) ============
+
+
+@router.post("/alerts/{alert_id}/acknowledge")
+async def acknowledge_alert(
+    alert_id: str,
+    body: dict | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Acknowledge an alert, suppressing escalation."""
+    import uuid as _uuid
+
+    try:
+        _uuid.UUID(alert_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    result = await db.execute(
+        select(AlertLog).where(AlertLog.id == alert_id)
+    )
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    if alert.acknowledged_at is not None:
+        # Idempotent: already acknowledged.
+        return {
+            "alert_id": alert_id,
+            "status": "already_acknowledged",
+            "acknowledged_at": alert.acknowledged_at.isoformat(),
+            "acknowledged_by": alert.acknowledged_by,
+        }
+
+    acknowledged_by = None
+    if isinstance(body, dict):
+        acknowledged_by = body.get("acknowledged_by")
+
+    alert.acknowledged_at = datetime.utcnow()
+    alert.acknowledged_by = (
+        acknowledged_by if isinstance(acknowledged_by, str) else None
+    )
+    alert.status = "acknowledged"
+    await db.commit()
+    await db.refresh(alert)
+    return {
+        "alert_id": alert_id,
+        "status": "acknowledged",
+        "acknowledged_at": alert.acknowledged_at.isoformat(),
+        "acknowledged_by": alert.acknowledged_by,
     }
