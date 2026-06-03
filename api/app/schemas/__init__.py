@@ -8,4 +8,7 @@ from .schemas import (
     EventResponse,
     DashboardStats,
     AlertLogResponse,
+    AlertRulesUpdate,
+    MuteWindow,
+    EscalationRule,
 )

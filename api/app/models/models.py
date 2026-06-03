@@ -54,6 +54,9 @@ class AlertLog(Base):
     alert_type: Mapped[str] = mapped_column(String(32), nullable=False)  # 'email', 'slack'
     triggered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default="sent")  # 'sent', 'failed', 'pending'
+    status: Mapped[str] = mapped_column(String(16), default="sent")  # 'sent', 'failed', 'pending', 'acknowledged', 'escalated'
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     source: Mapped["WebhookSource"] = relationship("WebhookSource", back_populates="alerts")

@@ -1,8 +1,9 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-async function fetchAPI<T>(endpoint: string): Promise<T> {
+async function fetchAPI<T>(endpoint: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${endpoint}`, {
     cache: "no-store",
+    ...init,
   });
   if (!res.ok) {
     throw new Error(`API Error: ${res.status}`);
@@ -136,4 +137,93 @@ export async function getAlerts(sourceId?: string): Promise<AlertLog[]> {
 // SSE for real-time updates
 export function createEventSource(): EventSource {
   return new EventSource(`${API_BASE}/api/stream/events`);
+}
+
+// ============== P2: Alert rules (mute windows + escalation) ==============
+
+export interface MuteWindow {
+  days: string[];          // ["monday", "tuesday", ...]
+  start_hour: number;      // 0-23
+  end_hour: number;        // 0-23
+  timezone: string;        // IANA tz name, e.g. "UTC" or "America/New_York"
+}
+
+export interface EscalationRule {
+  enabled: boolean;
+  minutes_until_escalate: number;
+  escalate_to: string[];
+}
+
+export interface AlertRules {
+  source_id: string;
+  mute_windows: MuteWindow[];
+  escalation: EscalationRule;
+}
+
+export interface MuteTestResult {
+  source_id: string;
+  muted: boolean;
+  active_windows: MuteWindow[];
+}
+
+export async function getAlertRules(sourceId: string): Promise<AlertRules> {
+  return fetchAPI<AlertRules>(`/api/sources/${sourceId}/alert-rules`);
+}
+
+export async function updateAlertRules(
+  sourceId: string,
+  rules: { mute_windows?: MuteWindow[]; escalation?: EscalationRule }
+): Promise<{ source_id: string; alert_config: Record<string, unknown> }> {
+  const res = await fetch(`${API_BASE}/api/sources/${sourceId}/alert-rules`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(rules),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update alert rules: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function testMute(sourceId: string): Promise<MuteTestResult> {
+  return fetchAPI<MuteTestResult>(`/api/sources/${sourceId}/test-mute`, {
+    method: "POST",
+  });
+}
+
+export async function acknowledgeAlert(
+  alertId: string,
+  acknowledgedBy?: string
+): Promise<{
+  alert_id: string;
+  status: string;
+  acknowledged_at: string;
+  acknowledged_by: string | null;
+}> {
+  const res = await fetch(`${API_BASE}/api/alerts/${alertId}/acknowledge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(acknowledgedBy ? { acknowledged_by: acknowledgedBy } : {}),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to acknowledge alert: ${res.status}`);
+  }
+  return res.json();
+}
+
+// ============== Per-source email recipients (P2) ==============
+
+/**
+ * Update the per-source email recipients list. Recipients are merged
+ * into the source's alert_config.emails array.
+ */
+export async function updateSourceEmails(
+  sourceId: string,
+  emails: string[]
+): Promise<WebhookSource> {
+  // We need the current alert_config to merge in. The simplest path
+  // is to fetch then PATCH, but for now we PATCH the whole alert_config.
+  const source = await getSource(sourceId);
+  const cfg = (source.alert_config as Record<string, unknown>) || {};
+  return updateSource(sourceId, { alert_config: { ...cfg, emails } });
 }

@@ -4,6 +4,37 @@ from uuid import UUID
 from typing import Optional
 
 
+class MuteWindow(BaseModel):
+    """A single time-range during which alerts are suppressed for a source."""
+
+    days: list[str] = Field(
+        ...,
+        description="Day names (monday..sunday). Matched case-insensitively.",
+    )
+    start_hour: int = Field(0, ge=0, le=23)
+    end_hour: int = Field(0, ge=0, le=23)
+    timezone: str = Field("UTC", description="IANA timezone name (e.g. UTC, America/New_York)")
+
+
+class EscalationRule(BaseModel):
+    """Acknowledge-to-suppress escalation config."""
+
+    enabled: bool = False
+    minutes_until_escalate: int = Field(15, ge=1, le=10080)
+    escalate_to: list[str] = Field(default_factory=list)
+
+
+class AlertRulesUpdate(BaseModel):
+    """Body for PUT /api/sources/{source_id}/alert-rules.
+
+    Both ``mute_windows`` and ``escalation`` are optional; omitted keys
+    are left untouched.
+    """
+
+    mute_windows: Optional[list[MuteWindow]] = None
+    escalation: Optional[EscalationRule] = None
+
+
 class WebhookSourceCreate(BaseModel):
     id: str = Field(..., min_length=1, max_length=64, description="Unique source identifier")
     name: str = Field(..., min_length=1, max_length=255)

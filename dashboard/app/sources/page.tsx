@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getSources, createSource, deleteSource, type WebhookSource } from "@/lib/api";
+import { AlertRulesEditor } from "@/components/sources/alert-rules-editor";
 import { Plus, Trash2, Activity } from "lucide-react";
 
 export default function SourcesPage() {
@@ -145,32 +146,42 @@ function SourceCard({
   source: WebhookSource;
   onDelete: () => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   return (
-    <div className="bg-white p-6 rounded-xl border border-gray-200 flex items-center justify-between">
-      <div className="flex items-center gap-4">
-        <div className="p-3 bg-blue-100 rounded-xl">
-          <Activity className="w-6 h-6 text-blue-600" />
+    <div className="bg-white p-6 rounded-xl border border-gray-200">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div className="p-3 bg-blue-100 rounded-xl">
+            <Activity className="w-6 h-6 text-blue-600" />
+          </div>
+          <div>
+            <h3 className="font-semibold text-gray-900">{source.name}</h3>
+            <p className="text-sm text-gray-500">ID: {source.id} • {source.platform}</p>
+          </div>
         </div>
-        <div>
-          <h3 className="font-semibold text-gray-900">{source.name}</h3>
-          <p className="text-sm text-gray-500">ID: {source.id} • {source.platform}</p>
+        <div className="flex items-center gap-4">
+          <span
+            className={`px-3 py-1 rounded-full text-sm font-medium ${
+              source.is_active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
+            }`}
+          >
+            {source.is_active ? "Active" : "Inactive"}
+          </span>
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-lg"
+          >
+            {expanded ? "Hide alerts" : "Configure alerts"}
+          </button>
+          <button
+            onClick={onDelete}
+            className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
         </div>
       </div>
-      <div className="flex items-center gap-4">
-        <span
-          className={`px-3 py-1 rounded-full text-sm font-medium ${
-            source.is_active ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"
-          }`}
-        >
-          {source.is_active ? "Active" : "Inactive"}
-        </span>
-        <button
-          onClick={onDelete}
-          className="p-2 text-red-600 hover:bg-red-50 rounded-lg"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
-      </div>
+      {expanded && <AlertRulesEditor sourceId={source.id} />}
     </div>
   );
 }
