@@ -1,5 +1,12 @@
 import * as React from "react";
-import { type ToastActionElement, type ToastProps } from "@/components/ui/use-toast";
+
+// Define type locally to break the circular import with use-toast.ts
+type ToastActionElement = React.ReactElement;
+type ToastProps = React.HTMLAttributes<HTMLDivElement> & {
+  variant?: "default" | "destructive";
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+};
 
 const Toast = React.forwardRef<
   HTMLDivElement,
@@ -85,6 +92,12 @@ const ToastViewport = React.forwardRef<
 });
 ToastViewport.displayName = "ToastViewport";
 
+// ToastProvider is a simple wrapper that renders children
+const ToastProvider = ({ children }: { children: React.ReactNode }) => {
+  return <>{children}</>;
+};
+ToastProvider.displayName = "ToastProvider";
+
 export {
   type ToastProps,
   type ToastActionElement,
@@ -94,4 +107,5 @@ export {
   ToastClose,
   ToastAction,
   ToastViewport,
+  ToastProvider,
 };

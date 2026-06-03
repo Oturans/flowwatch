@@ -1,7 +1,14 @@
 "use client";
 
 import * as React from "react";
-import type { ToastActionElement, ToastProps } from "@/components/ui/toast";
+
+// Define type locally to break the circular import with toast.tsx
+type ToastActionElement = React.ReactElement;
+type ToastProps = React.HTMLAttributes<HTMLDivElement> & {
+  variant?: "default" | "destructive";
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+};
 
 const TOAST_LIMIT = 1;
 const TOAST_REMOVE_DELAY = 1000000;

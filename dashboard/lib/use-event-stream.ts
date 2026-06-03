@@ -9,7 +9,7 @@ export function useEventStream() {
 
   useEffect(() => {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-    const eventSource = new EventSource(`${apiUrl}/api/events/stream`);
+    const eventSource = new EventSource(`${apiUrl}/api/stream/events`);
 
     eventSource.onmessage = (event) => {
       try {

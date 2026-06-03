@@ -166,7 +166,7 @@ async def ingest_webhook(
     event = await store_event_locally(event_data, source_id)
 
     # 10. Dispatch Celery task for PostgreSQL persistence
-    from app.tasks import process_event
+    from app.tasks.tasks import process_event
     process_event.delay(event)
 
     # 11. Return 200 for valid events (gotcha #7)
@@ -179,7 +179,7 @@ async def verify_webhook_signature(
     request: Request
 ):
     """Verify webhook signature for a given source."""
-    body = await request.body()
+    _body = await request.body()
     headers = dict(request.headers)
 
     # Get signature (Svix or raw HMAC)

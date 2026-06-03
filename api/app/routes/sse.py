@@ -10,18 +10,18 @@ router = APIRouter(prefix="/api", tags=["sse"])
 redis_pubsub_url = settings.redis_url.replace("/0", f"/{settings.redis_pubsub_db}")
 
 
-@router.get("/events/stream")
+@router.get("/stream/events")
 async def event_stream(request: Request):
     """
     Server-Sent Events endpoint for real-time event updates.
     Uses Redis pub/sub to broadcast events to all connected clients.
     """
-    pubsub = redis.from_url(redis_pubsub_url, decode_responses=True)
+    redis_client = redis.from_url(redis_pubsub_url, decode_responses=True)
+    pubsub = redis_client.pubsub()
     await pubsub.subscribe("flowwatch:events")
 
     async def generate():
         try:
-            channel = pubsub.pubsub()
             # Send initial connection message
             yield "data: {\"type\": \"connected\"}\n\n"
 
@@ -30,15 +30,23 @@ async def event_stream(request: Request):
                 if await request.is_disconnected():
                     break
 
-                message = await channel.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=1.0
+                )
                 if message and message.get("type") == "message":
                     yield f"data: {message['data']}\n\n"
 
                 await asyncio.sleep(0.1)
 
         finally:
-            await pubsub.unsubscribe()
-            await pubsub.close()
+            try:
+                await pubsub.unsubscribe()
+            except Exception:
+                pass
+            try:
+                await pubsub.close()
+            except Exception:
+                pass
 
     return StreamingResponse(
         generate(),

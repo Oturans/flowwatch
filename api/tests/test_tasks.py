@@ -1,3 +1,4 @@
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 from app.tasks.tasks import send_email_alert
@@ -18,32 +19,44 @@ class TestSendEmailAlert:
     @pytest.mark.asyncio
     async def test_send_email_alert_success(self, event_data):
         """Test successful email sending via Resend."""
-        with patch("resend.Emails.send") as mock_resend:
-            mock_resend.Emails.send = MagicMock(return_value={"id": "email_123"})
-            with patch("app.tasks.tasks.SessionLocal") as mock_session:
-                mock_session.return_value.__enter__ = MagicMock()
-                mock_session.return_value.__exit__ = MagicMock()
-                mock_session_instance = MagicMock()
-                mock_session.return_value = mock_session_instance
+        import resend as resend_mod
+        from app.tasks import tasks as tasks_mod
+        from app.config import get_settings
 
-                # Call without .delay (direct call)
-                from app.config import get_settings
-                settings = get_settings()
-                settings.alert_email_to = "alerts@example.com"
-                settings.alert_email_from = "FlowWatch <alerts@flowwatch.app>"
-                settings.resend_api_key = "test_key"
+        # Mutate the settings instance that tasks.py actually uses.
+        get_settings.cache_clear()
+        s = get_settings()
+        s.resend_api_key = "test_key"
+        s.alert_email_to = "alerts@example.com"
+        s.alert_email_from = "FlowWatch <alerts@flowwatch.app>"
+        # Force tasks_mod.settings to refer to the same mutated object.
+        tasks_mod.settings = s
 
-                result = send_email_alert("event-123", event_data)
-                assert result["status"] == "sent"
-                mock_resend.Emails.send.assert_called_once()
+        with patch.object(resend_mod.Emails, "send") as mock_send, \
+             patch("app.tasks.tasks.SessionLocal") as mock_session_local:
+            mock_session = MagicMock()
+            mock_session_local.return_value = mock_session
+
+            mock_send.return_value = {"id": "email_123"}
+
+            result = send_email_alert("event-123", event_data)
+
+            assert result["status"] == "sent"
+            mock_send.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_email_alert_no_config(self, event_data):
         """Test email alert skipped when not configured."""
+        from app.tasks.tasks import settings as tasks_settings
         from app.config import get_settings
-        settings = get_settings()
-        settings.resend_api_key = ""
-        settings.alert_email_to = ""
+
+        get_settings.cache_clear()
+        s = get_settings()
+        s.resend_api_key = ""
+        s.alert_email_to = ""
+        # Force tasks_mod.settings to refer to the same mutated object.
+        import app.tasks.tasks as tasks_mod
+        tasks_mod.settings = s
 
         result = send_email_alert("event-123", event_data)
         assert result["status"] == "skipped"
@@ -98,3 +111,44 @@ class TestPartitionCleanup:
         assert old_table < f"workflow_events_y{cutoff}"
         # Current partitions should NOT match
         assert not (current_table < f"workflow_events_y{cutoff}")
+
+
+class TestRetentionIntegration:
+    """Integration test for the 7-day retention cleanup task.
+
+    Verifies the real ``cleanup_old_events`` Celery task against the
+    real database: it creates partitions for the next 7 days and drops
+    any older than 7 days.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cleanup_creates_future_partitions(self):
+        """cleanup_old_events creates partitions for the next 7 days."""
+        from app.tasks.tasks import cleanup_old_events
+        from datetime import date, timedelta
+        from sqlalchemy import create_engine, text
+
+        # Recreate the schema using the sync engine so the cleanup task
+        # (which uses sync) has a parent table to partition.
+        from app.database import Base
+        import app.models  # noqa: F401
+        engine = create_engine(os.environ["DATABASE_URL_SYNC"])
+        Base.metadata.drop_all(engine)
+        Base.metadata.create_all(engine)
+
+        # Run the task
+        cleanup_old_events()
+
+        # Verify partitions exist for today + 1..7
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT table_name FROM information_schema.tables "
+                     "WHERE table_name LIKE 'workflow_events_y%'")
+            )
+            existing = {row[0] for row in result}
+
+        today = date.today()
+        for i in range(1, 8):
+            d = today + timedelta(days=i)
+            expected = f"workflow_events_y{d.strftime('%Y%m%d')}"
+            assert expected in existing, f"missing partition {expected}"

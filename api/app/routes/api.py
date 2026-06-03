@@ -140,6 +140,14 @@ async def list_events(
 @router.get("/events/{event_id}")
 async def get_event(event_id: str, db: AsyncSession = Depends(get_db)):
     """Get event detail with full payload."""
+    # Reject non-UUID ids so static paths like /api/events/stream win.
+    import uuid as _uuid
+
+    try:
+        _uuid.UUID(event_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Event not found")
+
     result = await db.execute(
         select(WorkflowEvent).where(WorkflowEvent.id == event_id)
     )
@@ -216,3 +224,180 @@ async def list_alerts(
     query = query.order_by(AlertLog.triggered_at.desc()).offset(skip).limit(limit)
     result = await db.execute(query)
     return result.scalars().all()
+
+
+# ============ Retry ============
+
+# Per-source auto-retry configuration (read from WebhookSource.alert_config):
+#   alert_config: {
+#       "max_retries": 3,            # integer, default 3
+#       "retry_on_status": ["error", "timeout"]  # statuses that trigger retry
+#   }
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_STATUSES = ("error", "timeout", "failed")
+
+
+async def _record_retry_event(
+    db: AsyncSession,
+    original: WorkflowEvent,
+    attempt: int,
+) -> WorkflowEvent:
+    """Insert a new 'retried' event that mirrors the original."""
+    import uuid as _uuid
+
+    new_event = WorkflowEvent(
+        id=_uuid.uuid4(),
+        source_id=original.source_id,
+        workflow_id=original.workflow_id,
+        run_id=original.run_id,
+        event_type="retried",
+        status="running",
+        payload={
+            **(original.payload or {}),
+            "retry_of": str(original.id),
+            "retry_attempt": attempt,
+        },
+        error_message=original.error_message,
+        duration_ms=original.duration_ms,
+        received_at=datetime.utcnow(),
+    )
+    db.add(new_event)
+    await db.commit()
+    await db.refresh(new_event)
+    return new_event
+
+
+@router.post("/events/{event_id}/retry")
+async def retry_event(
+    event_id: str,
+    db: AsyncSession = Depends(get_db),
+    max_retries: int = Query(3, ge=0, le=10, description="Override source's max_retries"),
+):
+    """
+    Manually retry a failed workflow event.
+
+    The retry is recorded as a NEW event (with ``event_type='retried'``)
+    that points back to the original. The original is left intact so
+    history is preserved.
+
+    The number of retries is bounded by either the per-request override
+    (``max_retries`` query param) or the source's
+    ``alert_config.max_retries`` setting.
+    """
+    import uuid as _uuid
+
+    # Validate UUID; reject non-UUID ids so other routes win.
+    try:
+        _uuid.UUID(event_id)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Load original event
+    result = await db.execute(
+        select(WorkflowEvent).where(WorkflowEvent.id == event_id)
+    )
+    original = result.scalar_one_or_none()
+    if not original:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Look up the source to read per-source config.
+    src_result = await db.execute(
+        select(WebhookSource).where(WebhookSource.id == original.source_id)
+    )
+    source = src_result.scalar_one_or_none()
+    source_max = DEFAULT_MAX_RETRIES
+    retry_statuses = list(DEFAULT_RETRY_STATUSES)
+    if source and source.alert_config:
+        if isinstance(source.alert_config.get("max_retries"), int):
+            source_max = source.alert_config["max_retries"]
+        if isinstance(source.alert_config.get("retry_on_status"), list):
+            retry_statuses = source.alert_config["retry_on_status"]
+
+    effective_max = min(max_retries, source_max)
+
+    # Only retryable statuses can be retried.
+    if original.status not in retry_statuses:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Event status '{original.status}' is not retryable; "
+                f"allowed: {retry_statuses}"
+            ),
+        )
+
+    # Count prior retries for this event (events whose payload contains
+    # retry_of == original.id). Cast payload to JSONB so the @> containment
+    # operator works on PostgreSQL.
+    from sqlalchemy.dialects.postgresql import JSONB
+    from sqlalchemy import cast
+
+    prior = await db.execute(
+        select(func.count(WorkflowEvent.id)).where(
+            cast(WorkflowEvent.payload, JSONB).contains(
+                {"retry_of": str(original.id)}
+            )
+        )
+    )
+    prior_count = prior.scalar() or 0
+    next_attempt = prior_count + 1
+
+    if next_attempt > effective_max:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Max retries ({effective_max}) exceeded for this event "
+                f"({prior_count} prior attempts)"
+            ),
+        )
+
+    new_event = await _record_retry_event(db, original, next_attempt)
+
+    # Re-dispatch the processing pipeline (best-effort; broker may be down).
+    from app.tasks.tasks import process_event
+
+    retry_envelope = {
+        "id": str(new_event.id),
+        "source_id": new_event.source_id,
+        "received_at": new_event.received_at.isoformat(),
+        "workflow_id": new_event.workflow_id,
+        "run_id": new_event.run_id,
+        "event_type": new_event.event_type,
+        "status": new_event.status,
+        "payload": new_event.payload,
+        "error_message": new_event.error_message,
+        "duration_ms": new_event.duration_ms,
+        "retry_of": str(original.id),
+        "retry_attempt": next_attempt,
+    }
+    try:
+        process_event.delay(retry_envelope)
+    except Exception:
+        # We still return 200 because the retry event is recorded in
+        # Postgres; the consumer can re-queue later.
+        pass
+
+    return {
+        "status": "retry_queued",
+        "original_event_id": str(original.id),
+        "retry_event_id": str(new_event.id),
+        "attempt": next_attempt,
+        "max_attempts": effective_max,
+    }
+
+
+@router.get("/sources/{source_id}/retry-config")
+async def get_retry_config(source_id: str, db: AsyncSession = Depends(get_db)):
+    """Return the retry configuration for a source."""
+    result = await db.execute(
+        select(WebhookSource).where(WebhookSource.id == source_id)
+    )
+    source = result.scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+
+    cfg = source.alert_config or {}
+    return {
+        "source_id": source_id,
+        "max_retries": cfg.get("max_retries", DEFAULT_MAX_RETRIES),
+        "retry_on_status": cfg.get("retry_on_status", list(DEFAULT_RETRY_STATUSES)),
+    }

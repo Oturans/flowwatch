@@ -82,6 +82,30 @@ export async function createSource(data: {
   return res.json();
 }
 
+export async function updateSource(
+  id: string,
+  data: { name?: string; alert_config?: Record<string, unknown>; is_active?: boolean }
+): Promise<WebhookSource> {
+  const res = await fetch(`${API_BASE}/api/sources/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to update source: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteSource(id: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/api/sources/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(`Failed to delete source: ${res.status}`);
+  }
+}
+
 export async function getEvents(params?: {
   source_id?: string;
   status?: string;
@@ -111,5 +135,5 @@ export async function getAlerts(sourceId?: string): Promise<AlertLog[]> {
 
 // SSE for real-time updates
 export function createEventSource(): EventSource {
-  return new EventSource(`${API_BASE}/api/events/stream`);
+  return new EventSource(`${API_BASE}/api/stream/events`);
 }

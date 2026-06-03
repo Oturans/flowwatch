@@ -1,6 +1,13 @@
-${message}
+"""Initial schema
 
+Creates the three core tables: webhook_sources, workflow_events (parent
+of a RANGE-partitioned by-received_at tree), and alert_log. Initial
+partitions are created for today + 7 days forward; Celery Beat's
+``cleanup_old_events`` task keeps them rolled forward in production.
 """
+
+from datetime import date, timedelta
+
 from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
@@ -38,6 +45,7 @@ def upgrade() -> None:
         sa.Column('error_message', sa.Text, nullable=True),
         sa.Column('duration_ms', sa.Integer, nullable=True),
         sa.Column('received_at', sa.DateTime(timezone=True), primary_key=True, server_default=sa.func.now()),
+        postgresql_partition_by='RANGE (received_at)',
     )
 
     # Create indexes
@@ -56,17 +64,20 @@ def upgrade() -> None:
         sa.Column('status', sa.String(16), default='sent'),
     )
 
-    # Create initial partitions (today + 7 days ahead)
-    today = '2026-04-26'
+    # Create initial partitions for today + the next 7 days. Celery Beat's
+    # ``cleanup_old_events`` task keeps these rolled forward in production.
+    today = date.today()
     for i in range(8):
-        day_str = f'2026-04-{26+i:02d}' if i < 5 else f'2026-05-{i-4:02d}'
-        next_day = f'2026-04-{27+i:02d}' if i < 4 else f'2026-05-{i-3:02d}'
-        
-        op.execute(f"""
-            CREATE TABLE IF NOT EXISTS workflow_events_y{i} 
-            PARTITION OF workflow_events 
-            FOR VALUES FROM ('{day_str}') TO ('{next_day}')
-        """)
+        d = today + timedelta(days=i)
+        next_d = d + timedelta(days=1)
+        table_name = f"workflow_events_y{d.strftime('%Y%m%d')}"
+        start_val = d.strftime("%Y-%m-%d 00:00:00")
+        end_val = next_d.strftime("%Y-%m-%d 00:00:00")
+        op.execute(
+            f"CREATE TABLE IF NOT EXISTS {table_name} "
+            f"PARTITION OF workflow_events "
+            f"FOR VALUES FROM ('{start_val}') TO ('{end_val}')"
+        )
 
 
 def downgrade() -> None:

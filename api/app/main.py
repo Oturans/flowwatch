@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import async_engine, Base
-from app.routes import webhooks, api, sse
+from app.routes import webhooks, api, sse, github_webhooks
 
 # Configure structured logging
 logging.basicConfig(
@@ -55,6 +55,7 @@ app.add_middleware(
 app.include_router(webhooks.router)
 app.include_router(api.router)
 app.include_router(sse.router)
+app.include_router(github_webhooks.router)
 
 
 @app.get("/")

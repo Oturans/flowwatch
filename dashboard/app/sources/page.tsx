@@ -174,10 +174,3 @@ function SourceCard({
     </div>
   );
 }
-
-async function deleteSource(id: string): Promise<void> {
-  const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/sources/${id}`, {
-    method: "DELETE",
-  });
-  if (!res.ok) throw new Error("Failed to delete source");
-}

@@ -269,15 +269,15 @@ def cleanup_old_events():
 
         # --- Drop partitions older than 7 days ---
         cutoff = (today - timedelta(days=7)).strftime("%Y%m%d")
-        result = conn.execute(text(
-            """
-            SELECT tablename FROM information_schema.tables
-            WHERE tablename LIKE 'workflow_events_y%'
-            AND tablename < 'workflow_events_y' || :cutoff
-            AND schemaname = 'public'
-            """,
-            {"cutoff": cutoff}
-        ))
+        result = conn.execute(
+            text(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_name LIKE 'workflow_events_y%' "
+                "AND table_name < 'workflow_events_y' || :cutoff "
+                "AND table_schema = 'public'"
+            ),
+            {"cutoff": cutoff},
+        )
         old_partitions = [row[0] for row in result]
         for table_name in old_partitions:
             conn.execute(text(f"DROP TABLE IF EXISTS {table_name}"))
