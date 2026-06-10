@@ -30,6 +30,14 @@ class Settings(BaseSettings):
     alert_email_from: str = "FlowWatch <alerts@flowwatch.app>"
     alert_email_to: str = ""
 
+    # JWT (Sprint 1 — multi-tenant auth)
+    # Reuse ``secret_key`` as the JWT signing secret by default; in
+    # production set ``jwt_secret`` to a dedicated value.
+    jwt_secret: str = ""
+    jwt_algorithm: str = "HS256"
+    jwt_access_ttl_minutes: int = 60
+    jwt_refresh_ttl_minutes: int = 60 * 24 * 7  # 7 days
+
     class Config:
         env_file = ".env"
         extra = "allow"
@@ -37,4 +45,10 @@ class Settings(BaseSettings):
 
 @lru_cache()
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    # Default JWT secret to secret_key if not explicitly set
+    if not s.jwt_secret:
+        # Use object.__setattr__ because the model is frozen in spirit;
+        # pydantic-settings allows this for computed defaults.
+        object.__setattr__(s, "jwt_secret", s.secret_key)
+    return s

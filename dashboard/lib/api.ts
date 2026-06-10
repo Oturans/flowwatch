@@ -1,11 +1,80 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// ---------------------------------------------------------------------------
+// Auth token storage
+// ---------------------------------------------------------------------------
+//
+// Tokens live in localStorage under a single namespaced key. The auth
+// context below owns reading/writing this; helper functions here
+// are kept tiny so non-React code (e.g. fetch) can still read it.
+
+export const AUTH_TOKEN_KEY = "flowwatch:auth:token";
+export const AUTH_REFRESH_KEY = "flowwatch:auth:refresh";
+export const AUTH_USER_KEY = "flowwatch:auth:user";
+
+export function getStoredToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+export function getStoredUser(): import("./api").AuthUser | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(AUTH_USER_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as import("./api").AuthUser;
+  } catch {
+    return null;
+  }
+}
+
+export function getStoredRefresh(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(AUTH_REFRESH_KEY);
+}
+
+export function storeAuth(token: string, refresh: string, user: AuthUser) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+  window.localStorage.setItem(AUTH_REFRESH_KEY, refresh);
+  window.localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+}
+
+export function clearAuth() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(AUTH_TOKEN_KEY);
+  window.localStorage.removeItem(AUTH_REFRESH_KEY);
+  window.localStorage.removeItem(AUTH_USER_KEY);
+}
+
 async function fetchAPI<T>(endpoint: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+
+  // Auto-attach bearer token if we have one and the caller didn't
+  // set their own Authorization header. Endpoints that need to
+  // remain public (auth/*) won't be impacted because they ignore
+  // the header.
+  if (!headers["Authorization"] && !headers["authorization"]) {
+    const token = getStoredToken();
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${API_BASE}${endpoint}`, {
     cache: "no-store",
     ...init,
+    headers,
   });
   if (!res.ok) {
+    if (res.status === 401) {
+      // Surface a typed error the auth context can pick up.
+      const err = new Error(`API Error: ${res.status}`) as Error & {
+        status?: number;
+      };
+      err.status = 401;
+      throw err;
+    }
     throw new Error(`API Error: ${res.status}`);
   }
   return res.json();
@@ -226,4 +295,114 @@ export async function updateSourceEmails(
   const source = await getSource(sourceId);
   const cfg = (source.alert_config as Record<string, unknown>) || {};
   return updateSource(sourceId, { alert_config: { ...cfg, emails } });
+}
+
+// ============== Sprint 1: Auth + multi-tenant ==============
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  full_name: string | null;
+  org_id: string;
+  role: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface AuthTenant {
+  id: string;
+  name: string;
+  slug: string;
+  plan: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface TokenPair {
+  access_token: string;
+  refresh_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export interface RegisterPayload {
+  tenant: {
+    name: string;
+    slug: string;
+    plan?: string;
+  };
+  user: {
+    email: string;
+    password: string;
+    full_name?: string | null;
+  };
+}
+
+export interface RegisterResponse {
+  user: AuthUser;
+  tenant: AuthTenant;
+  tokens: TokenPair;
+}
+
+export interface MeResponse {
+  user: AuthUser;
+  tenant: AuthTenant;
+}
+
+export async function register(
+  payload: RegisterPayload
+): Promise<RegisterResponse> {
+  const res = await fetch(`${API_BASE}/api/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to register: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function login(
+  email: string,
+  password: string
+): Promise<TokenPair> {
+  const res = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to login: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function refresh(refreshToken: string): Promise<TokenPair> {
+  const res = await fetch(`${API_BASE}/api/auth/refresh`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ refresh_token: refreshToken }),
+  });
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to refresh: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchMe(): Promise<MeResponse> {
+  return fetchAPI<MeResponse>("/api/auth/me");
+}
+
+async function safeDetail(res: Response): Promise<string | null> {
+  try {
+    const j = await res.json();
+    if (j && typeof j.detail === "string") return j.detail;
+  } catch {
+    /* ignore */
+  }
+  return null;
 }

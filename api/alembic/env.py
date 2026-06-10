@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from app.database import Base
 from app.models import WebhookSource, WorkflowEvent, AlertLog
+from app.models.tenant import Tenant, User  # noqa: F401
 
 config = context.config
 

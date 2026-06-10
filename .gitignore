@@ -50,6 +50,9 @@ out/
 *.aab
 *.log
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Database
 *.sqlite3
 *.db

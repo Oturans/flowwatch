@@ -182,3 +182,86 @@ async def client():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+
+
+# ---------------------------------------------------------------------------
+# Sprint 1 — tenant / user fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture
+async def tenant_factory():
+    """Factory that creates tenants and returns them.
+
+    Cleans up after each test by truncating the tables; the session
+    teardown already drops everything, so this is defensive.
+    """
+    created: list = []
+
+    async def _make(name: str = "Test Tenant", slug: str | None = None, plan: str = "free"):
+        import uuid as _uuid
+        from app.database import AsyncSessionLocal
+        from app.models import Tenant
+
+        slug = slug or f"t-{_uuid.uuid4().hex[:8]}"
+        async with AsyncSessionLocal() as session:
+            t = Tenant(name=name, slug=slug, plan=plan, is_active=True)
+            session.add(t)
+            await session.commit()
+            await session.refresh(t)
+            created.append(t)
+            return t
+
+    yield _make
+
+    # No explicit cleanup — pytest_sessionfinish drops the schema.
+
+
+@pytest_asyncio.fixture
+async def user_factory():
+    """Factory that creates users (with hashed password) bound to a tenant."""
+
+    async def _make(
+        tenant,
+        email: str | None = None,
+        password: str = "supersecret123",
+        role: str = "member",
+        is_active: bool = True,
+    ):
+        import uuid as _uuid
+        from app.core.auth import hash_password
+        from app.database import AsyncSessionLocal
+        from app.models import User
+
+        email = email or f"u-{_uuid.uuid4().hex[:8]}@example.com"
+        async with AsyncSessionLocal() as session:
+            u = User(
+                email=email.lower(),
+                hashed_password=hash_password(password),
+                org_id=tenant.id,
+                role=role,
+                is_active=is_active,
+            )
+            session.add(u)
+            await session.commit()
+            await session.refresh(u)
+            return u
+
+    return _make
+
+
+@pytest_asyncio.fixture
+async def auth_headers_factory():
+    """Factory that issues valid Authorization headers for a user.
+
+    Returns a coroutine ``await _make(user) -> {"Authorization": "Bearer ..."}``.
+    The token is a freshly-signed access JWT (not a stored DB value).
+    """
+
+    async def _make(user):
+        from app.core.auth import create_access_token
+
+        token = create_access_token(user.id, user.org_id)
+        return {"Authorization": f"Bearer {token}"}
+
+    return _make

@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.database import async_engine, Base
 from app.routes import webhooks, api, sse, github_webhooks
+from app.api import auth as auth_api
+from app.middleware.tenant import TenantIsolationMiddleware
 
 # Configure structured logging
 logging.basicConfig(
@@ -51,11 +53,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Tenant isolation: decode JWT and stamp request.state with org_id/user_id
+app.add_middleware(TenantIsolationMiddleware)
+
 # Include routers
 app.include_router(webhooks.router)
 app.include_router(api.router)
 app.include_router(sse.router)
 app.include_router(github_webhooks.router)
+app.include_router(auth_api.router)
 
 
 @app.get("/")

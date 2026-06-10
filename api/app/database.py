@@ -1,7 +1,8 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from contextlib import asynccontextmanager
+import uuid
 from app.config import get_settings
 
 settings = get_settings()
@@ -47,3 +48,35 @@ async def get_db_context():
             yield session
         finally:
             await session.close()
+
+
+# ---------------------------------------------------------------------------
+# Tenant context (Sprint 1)
+# ---------------------------------------------------------------------------
+#
+# Row-level security policies in PostgreSQL use the GUC
+# ``app.org_id`` to scope queries to the active tenant. We expose
+# a couple of helpers so routes and the tenant middleware can stamp
+# the GUC at the right point in the request lifecycle.
+
+
+async def set_tenant_context(db: AsyncSession, org_id: uuid.UUID) -> None:
+    """Stamp the per-request ``app.org_id`` GUC for the open session.
+
+    Idempotent: calling twice with the same value is a no-op (apart
+    from the network round-trip).
+    """
+    await db.execute(
+        text("SELECT set_config('app.org_id', :org_id, true)"),
+        {"org_id": str(org_id)},
+    )
+
+
+def clear_tenant_context_sync() -> None:
+    """Reset the ``app.org_id`` GUC for sync engine consumers (Celery).
+
+    Use after a task has finished using tenant context. Safe to call
+    outside a transaction.
+    """
+    with sync_engine.begin() as conn:
+        conn.execute(text("SELECT set_config('app.org_id', '', false)"))

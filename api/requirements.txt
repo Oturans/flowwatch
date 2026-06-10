@@ -15,3 +15,6 @@ pytest==8.3.4
 pytest-asyncio==0.24.0
 aiosqlite==0.20.0
 resend
+bcrypt==4.0.1
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.5.0

@@ -59,4 +59,14 @@ class AlertLog(Base):
     acknowledged_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # Sprint 1: tenant scoping. The column is added nullable so the
+    # 003 migration can backfill it before flipping the NOT NULL flag
+    # on the next migration. For new installs the migration makes it
+    # NOT NULL directly.
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
     source: Mapped["WebhookSource"] = relationship("WebhookSource", back_populates="alerts")
