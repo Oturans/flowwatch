@@ -200,8 +200,10 @@ def downgrade() -> None:
     # Drop users / tenants (and their indexes / constraints). Drop the
     # unique constraint first because the backing index can't be
     # dropped while the constraint references it. Use guarded DDL.
+    # Use CASCADE on the tenants drop to clean up any future tables
+    # (Sprint 2's traces / anomaly_* reference tenants via FK).
     bind.execute(sa.text("DROP INDEX IF EXISTS ix_users_org_id"))
     bind.execute(sa.text("DROP TABLE IF EXISTS users"))
     bind.execute(sa.text("ALTER TABLE IF EXISTS tenants DROP CONSTRAINT IF EXISTS uq_tenants_slug"))
     bind.execute(sa.text("DROP INDEX IF EXISTS ix_tenants_slug"))
-    bind.execute(sa.text("DROP TABLE IF EXISTS tenants"))
+    bind.execute(sa.text("DROP TABLE IF EXISTS tenants CASCADE"))
