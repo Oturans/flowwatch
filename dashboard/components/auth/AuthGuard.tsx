@@ -26,7 +26,7 @@ export function AuthGuard({ children }: { children: ReactNode }) {
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-gray-500 text-sm">Checking session\u2026</div>
+        <div className="text-gray-500 text-sm">Checking session…</div>
       </div>
     );
   }

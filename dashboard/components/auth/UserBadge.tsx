@@ -21,7 +21,7 @@ export function UserBadge() {
           <span className="font-medium text-gray-900">{user.email}</span>
           {tenant && (
             <span className="text-xs text-gray-500">
-              {tenant.name} \u00b7 {user.role}
+              {tenant.name} · {user.role}
             </span>
           )}
         </div>

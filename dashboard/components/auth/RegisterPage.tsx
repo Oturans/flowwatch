@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAuth } from "./AuthContext";
 
 /**
- * /register page \u2014 creates a new tenant + first admin user.
+ * /register page — creates a new tenant + first admin user.
  *
  * Slug is auto-derived from the org name (you can override) and must
  * be URL-safe (lowercase alphanumerics + hyphens).
@@ -109,7 +109,7 @@ export function RegisterPage() {
             type="password"
             value={password}
             onChange={setPassword}
-            placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+            placeholder="••••••••"
             autoComplete="new-password"
             minLength={8}
             required
@@ -131,7 +131,7 @@ export function RegisterPage() {
           disabled={submitting}
           className="mt-6 w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium py-2 px-4 rounded text-sm transition"
         >
-          {submitting ? "Creating account\u2026" : "Create account"}
+          {submitting ? "Creating account…" : "Create account"}
         </button>
 
         <div className="mt-6 text-center text-sm text-gray-500">

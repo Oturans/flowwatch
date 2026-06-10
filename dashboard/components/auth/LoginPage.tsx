@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useAuth } from "./AuthContext";
 
 /**
- * /login page \u2014 email + password. On success, the auth context
+ * /login page — email + password. On success, the auth context
  * routes the user back to the dashboard.
  */
 export function LoginPage() {
@@ -35,7 +35,7 @@ export function LoginPage() {
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-gray-500">Loading\u2026</div>
+        <div className="text-gray-500">Loading…</div>
       </div>
     );
   }
@@ -77,7 +77,7 @@ export function LoginPage() {
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           className="w-full px-3 py-2 border border-gray-300 rounded mb-6 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"
+          placeholder="••••••••"
         />
 
         {error && (
@@ -94,7 +94,7 @@ export function LoginPage() {
           disabled={submitting}
           className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-medium py-2 px-4 rounded text-sm transition"
         >
-          {submitting ? "Signing in\u2026" : "Sign in"}
+          {submitting ? "Signing in…" : "Sign in"}
         </button>
 
         <div className="mt-6 text-center text-sm text-gray-500">

@@ -40,7 +40,7 @@ export function HomeDashboard() {
   if (isLoading) {
     return (
       <div className="p-6 max-w-7xl mx-auto">
-        <div className="text-gray-500 text-sm">Loading dashboard\u2026</div>
+        <div className="text-gray-500 text-sm">Loading dashboard…</div>
       </div>
     );
   }
