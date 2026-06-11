@@ -154,6 +154,14 @@ class AnomalyEvent(Base):
         ForeignKey("anomaly_rules.id", ondelete="CASCADE"),
         nullable=False,
     )
+    # Sprint 3: nullable link back to the webhook source. Filled in
+    # by the dispatcher so the alert history can join back to the
+    # source name and Slack config. Older Sprint 2 events have NULL.
+    source_id: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        ForeignKey("webhook_sources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -165,8 +173,83 @@ class AnomalyEvent(Base):
     acknowledged_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Sprint 3: dismiss workflow. The dashboard's "trash" button on an
+    # alert sets ``dismissed=True`` so it stops showing in the default
+    # alert list. ``acknowledged`` and ``dismissed`` are independent;
+    # an acknowledged alert can still be dismissed later.
+    dismissed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    dismissed_by: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    dismissed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     rule: Mapped["AnomalyRule"] = relationship("AnomalyRule", back_populates="events")
+
+
+# ---------------------------------------------------------------------------
+# Sprint 3: per-source configurable anomaly thresholds
+# ---------------------------------------------------------------------------
+
+
+# Metric enum kept as plain string constants so adding a fourth is a
+# one-line migration (extend the CHECK + add a branch in the engine).
+# Mirrored in the 005 migration's CHECK constraint.
+METRIC_LATENCY_MS = "latency_ms"
+METRIC_ERROR_RATE_PCT = "error_rate_pct"
+METRIC_FAILURE_COUNT = "failure_count"
+VALID_THRESHOLD_METRICS = (
+    METRIC_LATENCY_MS,
+    METRIC_ERROR_RATE_PCT,
+    METRIC_FAILURE_COUNT,
+)
+
+
+class SourceThreshold(Base):
+    """Per-source override for anomaly detection thresholds.
+
+    Each row is a single (source_id, metric) tuple with the
+    threshold value, evaluation window, and an enabled flag. The
+    engine looks up the active row at evaluation time and prefers
+    it over the hard-coded defaults baked into the rule objects.
+
+    A unique index on (source_id, metric) keeps the cardinality at
+    one row per metric, which makes PATCH updates a clean
+    upsert. The API layer normalizes the request body into upserts
+    via ``INSERT ... ON CONFLICT (source_id, metric) DO UPDATE``.
+    """
+
+    __tablename__ = "source_thresholds"
+    __table_args__ = (
+        # Mirrors the unique index created in migration 005.
+        Index(
+            "uq_source_thresholds_source_metric",
+            "source_id",
+            "metric",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("webhook_sources.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    metric: Mapped[str] = mapped_column(String(32), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    window_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=300)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +274,14 @@ __all__ = [
     "Trace",
     "AnomalyRule",
     "AnomalyEvent",
+    "SourceThreshold",
     "RULE_LATENCY_P95",
     "RULE_ERROR_RATE",
     "RULE_THROUGHPUT_DROP",
     "VALID_RULE_TYPES",
+    "METRIC_LATENCY_MS",
+    "METRIC_ERROR_RATE_PCT",
+    "METRIC_FAILURE_COUNT",
+    "VALID_THRESHOLD_METRICS",
     "normalize_uuid",
 ]

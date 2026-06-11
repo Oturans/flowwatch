@@ -81,19 +81,44 @@ class EvaluationResult:
     metric_value: Optional[float] = None
     context: Optional[dict] = None
 
-    def to_event(self) -> AnomalyEvent:
-        """Build (but do not persist) the AnomalyEvent ORM row."""
+    def to_event(
+        self,
+        *,
+        source_id: Optional[str] = None,
+        threshold_override: Optional[float] = None,
+        window_override: Optional[int] = None,
+    ) -> AnomalyEvent:
+        """Build (but do not persist) the AnomalyEvent ORM row.
+
+        ``source_id`` is stamped on the event so the alert history
+        can join back to the webhook source. ``threshold_override`` /
+        ``window_override`` let the dispatcher record the *effective*
+        threshold the engine used, so the dashboard can show
+        "p95 1234ms vs threshold 500ms" even when a per-source
+        override is in play.
+        """
+        threshold = (
+            float(threshold_override)
+            if threshold_override is not None
+            else float(self.rule.threshold)
+        )
+        window_seconds = (
+            int(window_override)
+            if window_override is not None
+            else int(self.rule.window_seconds)
+        )
         return AnomalyEvent(
             org_id=self.rule.org_id,
             rule_id=self.rule.id,
+            source_id=source_id,
             severity=self.severity,
             message=self.message,
             context={
                 **(self.context or {}),
                 "metric_value": self.metric_value,
                 "rule_type": self.rule.rule_type,
-                "threshold": self.rule.threshold,
-                "window_seconds": self.rule.window_seconds,
+                "threshold": threshold,
+                "window_seconds": window_seconds,
             },
         )
 
@@ -216,11 +241,19 @@ async def evaluate_org(
     org_id: uuid.UUID,
     *,
     as_of: Optional[datetime] = None,
+    threshold_overrides: Optional[dict[str, dict[str, object]]] = None,
 ) -> list[EvaluationResult]:
     """Evaluate every enabled rule for the org.
 
     ``as_of`` defaults to ``datetime.now(UTC)``. Tests use it to
     pin the window.
+
+    ``threshold_overrides`` is the per-source threshold map
+    produced by :func:`app.alerts.dispatch.resolve_thresholds_for_org`.
+    When a rule has a matching override for its source, the
+    override's value and window are used in place of the rule's
+    defaults. The shape is
+    ``{source_id: {metric: {value, window_seconds}}}``.
     """
     as_of = as_of or datetime.now(timezone.utc)
 
@@ -246,29 +279,124 @@ async def evaluate_org(
         window_start = as_of - timedelta(seconds=window_seconds)
         traces = await _load_recent_traces(db, org_id, window_start, workflow_id)
         for rule in bucket:
-            result = _apply_rule(rule, traces)
+            # Find a source that matches the rule's workflow (if any)
+            # and pull the per-source threshold override.
+            override_value: Optional[float] = None
+            override_window: Optional[int] = None
+            if threshold_overrides:
+                source_id = _match_source_for_rule(
+                    db, traces, workflow_id, threshold_overrides
+                )
+                if source_id:
+                    metric = _RULE_TYPE_TO_METRIC.get(rule.rule_type)
+                    if metric:
+                        override = threshold_overrides.get(source_id, {}).get(metric)
+                        # Accept either a dict (``{value, window_seconds}``)
+                        # or a SourceThreshold ORM row. The ORM path is
+                        # what ``resolve_thresholds_for_org`` returns in
+                        # the request handler; tests may use the dict
+                        # form for symmetry with the HTTP layer.
+                        if isinstance(override, dict):
+                            v = override.get("value")
+                            w = override.get("window_seconds")
+                            if v is not None:
+                                override_value = float(v)
+                            if w is not None:
+                                override_window = int(w)
+                        elif override is not None and hasattr(override, "value"):
+                            v = getattr(override, "value", None)
+                            w = getattr(override, "window_seconds", None)
+                            if v is not None:
+                                override_value = float(v)
+                            if w is not None:
+                                override_window = int(w)
+            result = _apply_rule(
+                rule,
+                traces,
+                threshold_override=override_value,
+                window_override=override_window,
+            )
             if result is not None:
                 findings.append(result)
     return findings
 
 
-def _apply_rule(rule: AnomalyRule, traces: Sequence[Trace]) -> Optional[EvaluationResult]:
-    """Dispatch a single rule to its detector."""
+# Sprint 3: mapping from rule_type to the threshold metric that
+# can override it. Kept here so the engine has a single source of
+# truth (mirrors the keys in ``app.alerts.dispatch``).
+_RULE_TYPE_TO_METRIC: dict[str, str] = {
+    "latency_p95": "latency_ms",
+    "error_rate": "error_rate_pct",
+}
+
+
+def _match_source_for_rule(
+    db: AsyncSession,
+    traces: Sequence[Trace],
+    workflow_id: Optional[str],
+    threshold_overrides: dict[str, dict[str, object]],
+) -> Optional[str]:
+    """Find the best source for applying a per-source threshold.
+
+    We just check the ``source`` attribute on the trace rows
+    (free-text) and match it against the keys in
+    ``threshold_overrides``. The mapping is best-effort; missing
+    sources fall through to the rule default.
+    """
+    for t in traces:
+        if t.source and t.source in threshold_overrides:
+            return t.source
+    return None
+
+
+def _apply_rule(
+    rule: AnomalyRule,
+    traces: Sequence[Trace],
+    *,
+    threshold_override: Optional[float] = None,
+    window_override: Optional[int] = None,
+) -> Optional[EvaluationResult]:
+    """Dispatch a single rule to its detector.
+
+    ``threshold_override`` and ``window_override`` are the
+    per-source overrides resolved by :func:`evaluate_org`. When
+    provided, the rule's ``threshold`` / ``window_seconds`` are
+    replaced for this evaluation only — the rule row itself is
+    not mutated.
+    """
     detector, _ = DETECTORS.get(rule.rule_type, (None, None))
     if detector is None:
         logger.warning("unknown rule_type=%s for rule=%s", rule.rule_type, rule.id)
         return None
+
+    effective_threshold = (
+        float(threshold_override)
+        if threshold_override is not None
+        else float(rule.threshold)
+    )
+    effective_window = (
+        int(window_override)
+        if window_override is not None
+        else int(rule.window_seconds)
+    )
+
     if rule.rule_type == RULE_LATENCY_P95:
-        result = detector(traces, rule.threshold)
+        result = detector(traces, effective_threshold)
     elif rule.rule_type == RULE_ERROR_RATE:
-        result = detector(traces, rule.threshold)
+        result = detector(traces, effective_threshold)
     elif rule.rule_type == RULE_THROUGHPUT_DROP:
-        result = detector(traces, rule.threshold, rule.window_seconds)
+        result = detector(traces, effective_threshold, effective_window)
     else:
         return None
     if result is None:
         return None
     result.rule = rule
+    # Stash the effective threshold / window on the result so the
+    # caller can record them in the AnomalyEvent context.
+    if result.context is None:
+        result.context = {}
+    result.context["effective_threshold"] = effective_threshold
+    result.context["effective_window_seconds"] = effective_window
     return result
 
 

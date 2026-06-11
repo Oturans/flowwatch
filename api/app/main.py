@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import async_engine, Base
-from app.routes import webhooks, api, sse, github_webhooks, traces, anomalies
+from app.routes import webhooks, api, sse, github_webhooks, traces, anomalies, sprint3
 from app.api import auth as auth_api
 from app.middleware.tenant import TenantIsolationMiddleware
 
@@ -64,6 +64,7 @@ app.include_router(github_webhooks.router)
 app.include_router(auth_api.router)
 app.include_router(traces.router)
 app.include_router(anomalies.router)
+app.include_router(sprint3.router)
 
 
 @app.get("/")

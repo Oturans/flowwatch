@@ -406,3 +406,195 @@ async function safeDetail(res: Response): Promise<string | null> {
   }
   return null;
 }
+
+// ============== Sprint 3: per-source thresholds + alerts v1 ==============
+
+export type ThresholdMetric = "latency_ms" | "error_rate_pct" | "failure_count";
+
+export interface ThresholdItem {
+  metric: ThresholdMetric;
+  value: number;
+  window_seconds: number;
+  enabled: boolean;
+}
+
+export interface ThresholdResponse extends ThresholdItem {
+  updated_at: string;
+}
+
+export interface ThresholdsResponse {
+  source_id: string;
+  thresholds: ThresholdResponse[];
+}
+
+export interface SlackConfigResponse {
+  source_id: string;
+  webhook_url_set: boolean;
+  enabled: boolean;
+  channel_hint: string | null;
+}
+
+export type AlertStatusFilter = "open" | "acknowledged" | "dismissed";
+export type AlertSeverity = "low" | "medium" | "high" | "critical";
+
+export interface AlertListItem {
+  id: string;
+  source_id: string;
+  source_name: string | null;
+  rule_id: string;
+  rule_name: string | null;
+  severity: string;
+  status: string;
+  message: string;
+  context: Record<string, unknown> | null;
+  detected_at: string;
+  acknowledged_at: string | null;
+  acknowledged_by: string | null;
+  dismissed_at: string | null;
+  dismissed_by: string | null;
+}
+
+export interface AlertListResponse {
+  items: AlertListItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_more: boolean;
+}
+
+export interface AlertListParams {
+  source_id?: string;
+  status?: AlertStatusFilter;
+  severity?: AlertSeverity;
+  start?: string;
+  end?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export async function getSourceThresholds(
+  sourceId: string
+): Promise<ThresholdsResponse> {
+  return fetchAPI<ThresholdsResponse>(
+    `/api/v1/sources/${encodeURIComponent(sourceId)}/thresholds`
+  );
+}
+
+export async function updateSourceThresholds(
+  sourceId: string,
+  thresholds: ThresholdItem[]
+): Promise<ThresholdsResponse> {
+  const res = await fetch(
+    `${API_BASE}/api/v1/sources/${encodeURIComponent(sourceId)}/thresholds`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thresholds }),
+    }
+  );
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to update thresholds: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function getSlackConfig(
+  sourceId: string
+): Promise<SlackConfigResponse> {
+  return fetchAPI<SlackConfigResponse>(
+    `/api/v1/sources/${encodeURIComponent(sourceId)}/slack-config`
+  );
+}
+
+export async function setSlackConfig(
+  sourceId: string,
+  body: {
+    webhook_url?: string | null;
+    enabled?: boolean;
+    channel_hint?: string | null;
+  }
+): Promise<SlackConfigResponse> {
+  const res = await fetch(
+    `${API_BASE}/api/v1/sources/${encodeURIComponent(sourceId)}/slack-config`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }
+  );
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to set Slack config: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function testSlackForAlert(
+  alertId: string
+): Promise<{ alert_id: string; source_id: string; sent: boolean }> {
+  const res = await fetch(
+    `${API_BASE}/api/v1/alerts/${encodeURIComponent(alertId)}/test-slack`,
+    { method: "POST" }
+  );
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to test Slack: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function listAlerts(
+  params: AlertListParams = {}
+): Promise<AlertListResponse> {
+  const search = new URLSearchParams();
+  if (params.source_id) search.set("source_id", params.source_id);
+  if (params.status) search.set("status", params.status);
+  if (params.severity) search.set("severity", params.severity);
+  if (params.start) search.set("start", params.start);
+  if (params.end) search.set("end", params.end);
+  if (params.page) search.set("page", params.page.toString());
+  if (params.page_size) search.set("page_size", params.page_size.toString());
+  const qs = search.toString();
+  return fetchAPI<AlertListResponse>(`/api/v1/alerts${qs ? `?${qs}` : ""}`);
+}
+
+export async function acknowledgeAlertV1(
+  alertId: string,
+  acknowledgedBy?: string
+): Promise<AlertListItem> {
+  const res = await fetch(
+    `${API_BASE}/api/v1/alerts/${encodeURIComponent(alertId)}/acknowledge`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        acknowledgedBy ? { acknowledged_by: acknowledgedBy } : {}
+      ),
+    }
+  );
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to acknowledge: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function dismissAlert(
+  alertId: string,
+  dismissedBy?: string
+): Promise<AlertListItem> {
+  const res = await fetch(
+    `${API_BASE}/api/v1/alerts/${encodeURIComponent(alertId)}/dismiss`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(dismissedBy ? { dismissed_by: dismissedBy } : {}),
+    }
+  );
+  if (!res.ok) {
+    const detail = await safeDetail(res);
+    throw new Error(detail || `Failed to dismiss: ${res.status}`);
+  }
+  return res.json();
+}

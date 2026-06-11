@@ -31,6 +31,8 @@ import {
   type EscalationRule,
   type AlertRules,
 } from "@/lib/api";
+import { ThresholdsEditor } from "@/components/sources/thresholds-editor";
+import { SlackConfigForm } from "@/components/sources/slack-config-form";
 import { Plus, Trash2, ChevronDown, ChevronUp, Loader2 } from "lucide-react";
 
 const DAY_NAMES = [
@@ -296,6 +298,16 @@ export function AlertRulesEditor({ sourceId }: { sourceId: string }) {
               Per-source recipients override the global default. Leave empty to use the
               global default.
             </p>
+          </section>
+
+          {/* Sprint 3: per-source anomaly thresholds */}
+          <section className="space-y-2">
+            <ThresholdsEditor sourceId={sourceId} />
+          </section>
+
+          {/* Sprint 3: Slack webhook */}
+          <section>
+            <SlackConfigForm sourceId={sourceId} />
           </section>
 
           <div className="flex items-center gap-2 pt-2 border-t border-gray-200">
