@@ -725,3 +725,290 @@ class TestTestSlackEndpoint:
             f"/api/v1/alerts/{uuid.uuid4()}/test-slack", headers=headers
         )
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Coverage for batch-loading + edge branches in list/ack/dismiss.
+# ---------------------------------------------------------------------------
+
+
+class TestAlertListEdgeCases:
+    """Hit the batch-loading + pagination edge branches that aren't
+    exercised by the happy-path tests above."""
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_orphan_event_no_source_no_rule_match(
+        self, client
+    ):
+        """An event whose source_id and rule_id are not in the
+        result set should still render (with empty source_name /
+        rule_name), and the batch-loader should not crash."""
+        user, headers = await _make_user_and_headers()
+        # source_id points to a non-existent source row.
+        rule = await _make_rule(user.org_id)
+        await _make_event(
+            org_id=user.org_id,
+            rule_id=rule.id,
+            source_id=None,
+        )
+        r = await client.get("/api/v1/alerts", headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["source_id"] == ""
+        assert item["source_name"] is None
+        # The rule exists so the rule name should be populated.
+        assert item["rule_name"] == "p95-too-high"
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_event_with_no_source_id(self, client):
+        """An event created without a source_id should still be
+        returned; the row formatter is exercised with source=None."""
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        await _make_event(
+            org_id=user.org_id, rule_id=rule.id, source_id=None
+        )
+        r = await client.get("/api/v1/alerts", headers=headers)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["total"] == 1
+        item = body["items"][0]
+        assert item["source_id"] == ""
+        assert item["source_name"] is None
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_has_more_true_then_false(self, client):
+        """The limit+1 trick: page_size=3 with 4 events yields
+        has_more=True on page 1, has_more=False on page 2."""
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        for _ in range(4):
+            await _make_event(org_id=user.org_id, rule_id=rule.id)
+
+        r1 = await client.get(
+            "/api/v1/alerts?page=1&page_size=3", headers=headers
+        )
+        b1 = r1.json()
+        assert b1["total"] == 4
+        assert len(b1["items"]) == 3
+        assert b1["has_more"] is True
+
+        r2 = await client.get(
+            "/api/v1/alerts?page=2&page_size=3", headers=headers
+        )
+        b2 = r2.json()
+        assert len(b2["items"]) == 1
+        assert b2["has_more"] is False
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_end_time_filter(self, client):
+        """The ``end`` query parameter filters out events that fired
+        after the cutoff."""
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        now = datetime.now(timezone.utc)
+        old = await _make_event(
+            org_id=user.org_id,
+            rule_id=rule.id,
+            detected_at=now - timedelta(hours=2),
+        )
+        recent = await _make_event(
+            org_id=user.org_id,
+            rule_id=rule.id,
+            detected_at=now - timedelta(minutes=1),
+        )
+        end = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        r = await client.get(
+            f"/api/v1/alerts?end={end}", headers=headers
+        )
+        assert r.status_code == 200, r.text
+        ids = {item["id"] for item in r.json()["items"]}
+        assert str(old.id) in ids
+        assert str(recent.id) not in ids
+
+    @pytest.mark.asyncio
+    async def test_list_alerts_tenancy_isolation(self, client):
+        """Events from a different org should not leak in."""
+        user_a, headers_a = await _make_user_and_headers()
+        user_b, headers_b = await _make_user_and_headers()
+        rule_a = await _make_rule(user_a.org_id)
+        rule_b = await _make_rule(user_b.org_id)
+        await _make_event(org_id=user_a.org_id, rule_id=rule_a.id)
+        await _make_event(org_id=user_b.org_id, rule_id=rule_b.id)
+        await _make_event(org_id=user_b.org_id, rule_id=rule_b.id)
+
+        ra = await client.get("/api/v1/alerts", headers=headers_a)
+        rb = await client.get("/api/v1/alerts", headers=headers_b)
+        assert ra.json()["total"] == 1
+        assert rb.json()["total"] == 2
+
+
+class TestAckDismissEdgeCases:
+    """Branches where the event has no source_id — exercises the
+    ``_maybe_source`` returning None path in ack/dismiss."""
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_event_without_source(self, client):
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        event = await _make_event(
+            org_id=user.org_id, rule_id=rule.id, source_id=None
+        )
+        r = await client.patch(
+            f"/api/v1/alerts/{event.id}/acknowledge",
+            headers={**headers, "Content-Type": "application/json"},
+            content=json.dumps({}),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "acknowledged"
+        assert body["source_id"] == ""
+        assert body["source_name"] is None
+
+    @pytest.mark.asyncio
+    async def test_dismiss_event_without_source(self, client):
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        event = await _make_event(
+            org_id=user.org_id, rule_id=rule.id, source_id=None
+        )
+        r = await client.patch(
+            f"/api/v1/alerts/{event.id}/dismiss",
+            headers={**headers, "Content-Type": "application/json"},
+            content=json.dumps({}),
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["status"] == "dismissed"
+        assert body["source_id"] == ""
+        assert body["source_name"] is None
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_uses_user_email_as_default_actor(
+        self, client
+    ):
+        """When the body omits ``acknowledged_by``, the user's
+        email is recorded."""
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        event = await _make_event(org_id=user.org_id, rule_id=rule.id)
+        r = await client.patch(
+            f"/api/v1/alerts/{event.id}/acknowledge",
+            headers={**headers, "Content-Type": "application/json"},
+            content=json.dumps({}),
+        )
+        assert r.status_code == 200
+        assert r.json()["acknowledged_by"] == user.email
+
+    @pytest.mark.asyncio
+    async def test_dismiss_uses_user_email_as_default_actor(self, client):
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        event = await _make_event(org_id=user.org_id, rule_id=rule.id)
+        r = await client.patch(
+            f"/api/v1/alerts/{event.id}/dismiss",
+            headers={**headers, "Content-Type": "application/json"},
+            content=json.dumps({}),
+        )
+        assert r.status_code == 200
+        assert r.json()["dismissed_by"] == user.email
+
+
+class TestTestSlackFallback:
+    """The ``test-slack`` endpoint has two source-resolution paths:
+    (1) by ``event.source_id``, (2) fallback to ``find_source_for_finding``.
+    Cover both, plus the success/failure of the underlying notifier."""
+
+    @pytest.mark.asyncio
+    async def test_test_slack_finds_active_source_with_slack(
+        self, client
+    ):
+        """The dispatch resolver returns the first active source;
+        the test-slack route uses that source's webhook URL."""
+        user, headers = await _make_user_and_headers()
+        url = "https://hooks.slack.com/services/T1/B1/secret"
+        source_id = await _make_source(slack_url=url)
+        rule = await _make_rule(user.org_id)
+        event = await _make_event(
+            org_id=user.org_id, rule_id=rule.id, source_id=source_id
+        )
+
+        from app.routes import sprint3 as sprint3_mod
+
+        original = sprint3_mod.SlackNotifier
+        try:
+            sprint3_mod.SlackNotifier = MagicMock(
+                return_value=MagicMock(send=AsyncMock(return_value=True))
+            )
+            r = await client.post(
+                f"/api/v1/alerts/{event.id}/test-slack", headers=headers
+            )
+        finally:
+            sprint3_mod.SlackNotifier = original
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["sent"] is True
+        assert body["source_id"] == source_id
+
+    @pytest.mark.asyncio
+    async def test_test_slack_returns_false_when_notifier_fails(
+        self, client
+    ):
+        """When the underlying httpx call fails the route should
+        return ``sent=False`` (never raise)."""
+        user, headers = await _make_user_and_headers()
+        url = "https://hooks.slack.com/services/T2/B2/secret"
+        source_id = await _make_source(slack_url=url)
+        rule = await _make_rule(user.org_id)
+        event = await _make_event(
+            org_id=user.org_id, rule_id=rule.id, source_id=source_id
+        )
+        from app.routes import sprint3 as sprint3_mod
+
+        original = sprint3_mod.SlackNotifier
+        try:
+            sprint3_mod.SlackNotifier = MagicMock(
+                return_value=MagicMock(send=AsyncMock(return_value=False))
+            )
+            r = await client.post(
+                f"/api/v1/alerts/{event.id}/test-slack", headers=headers
+            )
+        finally:
+            sprint3_mod.SlackNotifier = original
+        assert r.status_code == 200, r.text
+        assert r.json()["sent"] is False
+
+    @pytest.mark.asyncio
+    async def test_test_slack_404_when_no_source_id_no_resolver_match(
+        self, client
+    ):
+        """If the event has no source_id, the route delegates to
+        ``find_source_for_finding``; if that also returns None,
+        the route returns 404.
+
+        We force ``find_source_for_finding`` to return None by
+        stubbing it on the route module.
+        """
+        user, headers = await _make_user_and_headers()
+        rule = await _make_rule(user.org_id)
+        event = await _make_event(
+            org_id=user.org_id, rule_id=rule.id, source_id=None
+        )
+        from app.routes import sprint3 as sprint3_mod
+        from app.alerts import dispatch as dispatch_mod
+
+        original = dispatch_mod.find_source_for_finding
+        try:
+            async def _none(*_a, **_k):
+                return None
+            dispatch_mod.find_source_for_finding = _none
+            sprint3_mod.find_source_for_finding = _none
+            r = await client.post(
+                f"/api/v1/alerts/{event.id}/test-slack", headers=headers
+            )
+        finally:
+            dispatch_mod.find_source_for_finding = original
+            sprint3_mod.find_source_for_finding = original
+        assert r.status_code == 404
