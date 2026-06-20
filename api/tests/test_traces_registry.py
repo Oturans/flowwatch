@@ -162,3 +162,6 @@ class _FakeTrace:
         self.source = None
         self.attributes = {"k": "v"}
         self.error_message = None
+        # Sprint 4 added ``spans`` (JSONB list). Older tests use this
+        # fake without it; default to an empty list.
+        self.spans = []

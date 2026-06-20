@@ -79,6 +79,11 @@ class Trace(Base):
     duration_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     attributes: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Sprint 4: ordered list of child spans forming the trace DAG.
+    # Stored inline as JSONB so a single GET returns the full tree.
+    spans: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

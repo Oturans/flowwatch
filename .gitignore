@@ -59,3 +59,8 @@ out/
 
 # Docker
 docker-compose.override.yml
+# Local pip install (used for offline-friendly test runs)
+api/.site-packages/
+
+# Test coverage
+dashboard/coverage/

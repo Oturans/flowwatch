@@ -176,6 +176,7 @@ async def _persist_trace(org_id: uuid.UUID, payload: TraceIngest) -> Trace:
             duration_ms=payload.duration_ms,
             attributes=payload.attributes,
             error_message=payload.error_message,
+            spans=payload.spans or [],
         )
         session.add(trace)
         await session.commit()
@@ -199,6 +200,7 @@ async def _publish_trace(trace: Trace) -> int:
         "source": trace.source,
         "attributes": trace.attributes,
         "error_message": trace.error_message,
+        "spans": getattr(trace, "spans", None) or [],
     }
     # In-process broadcast
     delivered = await connection_registry.broadcast(trace.org_id, payload)
@@ -360,6 +362,14 @@ async def list_traces(
 # ---------------------------------------------------------------------------
 # SSE stream (read-only fan-out)
 # ---------------------------------------------------------------------------
+#
+# NOTE: this route is registered BEFORE the detail route below.
+# FastAPI matches routes in declaration order; if the detail
+# route (``/api/orgs/{org_id}/traces/{trace_db_id}``) is checked
+# first, a request to ``/traces/stream`` will fail with 422 because
+# the literal string "stream" is not a valid UUID. Keeping the
+# static path first avoids the ambiguity without changing the
+# public contract.
 
 
 @router.get("/api/orgs/{org_id}/traces/stream")
@@ -406,6 +416,39 @@ async def stream_traces(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Trace detail (registered AFTER the stream route above)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/api/orgs/{org_id}/traces/{trace_db_id}",
+    response_model=TraceResponse,
+)
+async def get_trace(
+    org_id: uuid.UUID,
+    trace_db_id: uuid.UUID,
+    user: User = Depends(require_org_member),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return a single trace by primary key, including its DAG spans.
+
+    The ``trace_db_id`` is the internal ``traces.id`` UUID returned
+    by the list / stream endpoints. We look it up scoped to the
+    caller's org so a leaked id from another tenant is harmless.
+    """
+    result = await db.execute(
+        select(Trace).where(Trace.id == trace_db_id, Trace.org_id == org_id)
+    )
+    trace = result.scalar_one_or_none()
+    if trace is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="trace not found",
+        )
+    return trace
 
 
 __all__ = ["router", "connection_registry", "TRACE_PUBSUB_CHANNEL"]

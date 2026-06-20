@@ -86,6 +86,13 @@ export function HomeDashboard() {
         >
           Alert History
         </Link>
+        <Link
+          href="/traces"
+          className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition"
+          data-testid="home-traces-link"
+        >
+          View Traces
+        </Link>
       </div>
 
       {stats.data && <DashboardStats stats={stats.data} />}

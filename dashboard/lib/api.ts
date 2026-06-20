@@ -598,3 +598,82 @@ export async function dismissAlert(
   }
   return res.json();
 }
+// ============== Sprint 4: traces (DAG + real-time feed) ==============
+
+/**
+ * Single span (DAG node) attached to a trace.
+ *
+ * The API persists spans as part of the trace row (JSONB) so a
+ * single GET returns the full DAG. ``parent_id`` references another
+ * span in the same trace, or is ``null`` for root spans.
+ */
+export interface TraceSpan {
+  span_id: string;
+  parent_id?: string | null;
+  name: string;
+  status?: TraceStatus;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_ms?: number | null;
+  attributes?: Record<string, unknown> | null;
+  error_message?: string | null;
+}
+
+export type TraceStatus =
+  | "ok"
+  | "error"
+  | "running"
+  | "timeout"
+  | "cancelled"
+  | string;
+
+/** The wire shape for a trace — matches the API's ``TraceResponse``. */
+export interface Trace {
+  id: string;
+  org_id: string;
+  trace_id: string;
+  workflow_id: string | null;
+  name: string;
+  source: string | null;
+  status: TraceStatus;
+  started_at: string;
+  ended_at: string | null;
+  duration_ms: number | null;
+  attributes: Record<string, unknown> | null;
+  error_message: string | null;
+  spans: TraceSpan[];
+  created_at: string;
+}
+
+export interface TraceListParams {
+  workflow_id?: string;
+  status?: TraceStatus;
+  limit?: number;
+  since?: string;
+}
+
+export async function getTraces(
+  orgId: string,
+  params: TraceListParams = {}
+): Promise<Trace[]> {
+  const search = new URLSearchParams();
+  if (params.workflow_id) search.set("workflow_id", params.workflow_id);
+  if (params.status) search.set("status", params.status);
+  if (params.limit) search.set("limit", String(params.limit));
+  if (params.since) search.set("since", params.since);
+  const qs = search.toString();
+  return fetchAPI<Trace[]>(`/api/orgs/${orgId}/traces${qs ? `?${qs}` : ""}`);
+}
+
+export async function getTrace(orgId: string, traceDbId: string): Promise<Trace> {
+  return fetchAPI<Trace>(`/api/orgs/${orgId}/traces/${traceDbId}`);
+}
+
+/**
+ * Server-Sent Events stream of new traces for the org. Returns an
+ * ``EventSource`` so the caller can attach listeners. The shape of
+ * each message is a ``Trace`` (same as the REST list endpoint).
+ */
+export function createTraceStream(orgId: string): EventSource {
+  return new EventSource(`${API_BASE}/api/orgs/${orgId}/traces/stream`);
+}
