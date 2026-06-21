@@ -102,7 +102,7 @@ describe("createTraceStream", () => {
     try {
       const es = createTraceStream("org-1") as any;
       expect(stub).toHaveBeenCalled();
-      const arg = stub.mock.calls[0][0];
+      const arg = (stub.mock.calls as any[][])[0][0];
       expect(arg).toContain("/api/orgs/org-1/traces/stream");
       // With a real EventSource, the constructor stores the URL.
       void es;
